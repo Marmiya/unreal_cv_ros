@@ -8,14 +8,14 @@ FExecStatus UecvrosFull(const TArray<FString>& Args);
 
 /** 2. Add the command dispatcher in CameraHandler.cpp */
 
-Cmd = FDispatcherDelegate::CreateRaw(this, &FCameraCommandHandler::UecvrosFull);
-Help = "Run the full UECVROS routine [X, Y, Z, p, y, r, coll, cameraID] Return npy image unless collided";
-CommandDispatcher->BindCommand("vget /uecvros/full [float] [float] [float] [float] [float] [float] [float] [uint]", Cmd, Help);
-
+CommandDispatcher->BindCommand(
+	"vget /uecvros/full [float] [float] [float] [float] [float] [float] [float] [uint]", FDispatcherDelegate::CreateRaw(this, &FCameraHandler::UecvrosFull),
+	"Run the full UECVROS routine [X, Y, Z, p, y, r, coll, cameraID] Return npy image unless collided"
+);
 
 /** 3. Add the function body to CameraHandler.cpp */
 
-FExecStatus FCameraCommandHandler::UecvrosFull(const TArray<FString>& Args)
+FExecStatus FCameraHandler::UecvrosFull(const TArray<FString>& Args)
 {
 	if (Args.Num() == 8) // [X, Y, Z, p, y, r, collisionT, cameraID]
 	{
@@ -31,12 +31,15 @@ FExecStatus FCameraCommandHandler::UecvrosFull(const TArray<FString>& Args)
 		// produce images and stack binary data
 		TArray<uint8> Data;
 		TArray<FString> CamIdArgs;
-		CamIdArgs.Init(Args[7], 1);		
-		Data += this->GetNpyBinaryUint8Data(CamIdArgs, TEXT("lit"), 4);
-		Data += this->GetNpyBinaryFloat16Data(CamIdArgs, TEXT("depth"), 1);
+		CamIdArgs.Init(Args[7], 1);
+		CamIdArgs.Add(TEXT("png"));
+		Data += (this->GetCameraLit(CamIdArgs)).GetData();
+		CamIdArgs.Remove(TEXT("png"));
+		CamIdArgs.Add(TEXT("npy"));
+		Data += (this->GetCameraDepth(CamIdArgs)).GetData();
 		
 		// Set new position & orientation
-		APawn* Pawn = FUE4CVServer::Get().GetPawn();
+		APawn* Pawn = FUnrealcvServer::Get().GetPawn();
 		FHitResult* hitresult = new FHitResult();
 		Pawn->SetActorLocation(LocNew, sweep, hitresult, ETeleportType::TeleportPhysics);
 		Pawn->SetActorRotation(RotNew, ETeleportType::TeleportPhysics);

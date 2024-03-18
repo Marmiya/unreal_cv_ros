@@ -73,7 +73,8 @@ class SensorModel:
     def callback(self, ros_data):
         ''' Produce simulated sensor outputs from raw binary data '''
         # Read out images
-        img_color = np.load(io.BytesIO(bytearray(ros_data.color_data)))
+        imageC = PImage.open(io.BytesIO(bytearray(ros_data.color_data)))
+        img_color = np.array(imageC)
         img_depth = np.load(io.BytesIO(bytearray(ros_data.depth_data)))
         mask_depth = img_depth.reshape(-1)
 

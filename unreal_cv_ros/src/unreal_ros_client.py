@@ -127,13 +127,21 @@ class UnrealRosClient:
                 else:
                     rospy.logerr("Unrealcv error: " + result)
             elif isinstance(result, str):
-                # Successful: Publish data for previous pose
-                idx = int(len(result) / 2)  # Half of the bytes are the 4channel color img, half the depth
                 msg = UeSensorRaw()
                 msg.header.stamp = self.previous_odom_msg.header.stamp
-                msg.color_data = result[:idx]
-                msg.depth_data = result[idx:]
-                self.pub.publish(msg)
+                
+                iend_pattern = b'\x49\x45\x4E\x44\xAE\x42\x60\x82'
+                iend_index = result.find(iend_pattern)
+
+                if iend_index != -1:
+                    # # The end of the image data is 8 bytes after the start of the IEND pattern
+                    end_of_png = iend_index + len(iend_pattern)                 
+                    msg.color_data = result[:end_of_png]
+                    msg.depth_data = result[end_of_png:]
+                    self.pub.publish(msg)
+                
+                else:
+                    print("IEND pattern not found. The binary string may not contain a valid PNG image.")
             else:
                 rospy.logerr("Unknown return format from unrealcv {0}".format(type(result)))
 
