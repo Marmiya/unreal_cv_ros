@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Unrealcv
-from unrealcv import client
+# from unrealcv import client
 
 # ros
 import rospy
@@ -9,6 +9,8 @@ from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from unreal_cv_ros.msg import UeSensorRaw
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 from std_srvs.srv import SetBool
 import tf
 
@@ -17,6 +19,10 @@ import sys
 import math
 import numpy as np
 import time
+
+import base64
+from unrealcv_api import UnrealCv_API as unrealcv_client
+# import airsim
 
 
 class UnrealRosClient:
@@ -31,11 +37,16 @@ class UnrealRosClient:
         self.collision_on = rospy.get_param('~collision_on', True)  # Check for collision
         self.publish_tf = rospy.get_param('~publish_tf', False)  # If true publish the camera transformation in tf
         self.slowdown = rospy.get_param('~slowdown', 0.0)  # Artificially slow down rate for UE to finish rendering
-        self.camera_id = rospy.get_param('~camera_id', 0)  # CameraID for unrealcv compatibility (usually use 0)
+        self.camera_id = rospy.get_param('~camera_id', 1)  # CameraID for unrealcv compatibility (usually use 1)
         self.queue_size = rospy.get_param('~queue_size', 1)  # How many requests are kept
+        self.height = rospy.get_param('~height', 768)  # Height of the image
+        self.width = rospy.get_param('~width', 1024)  # Width of the image
+        init_pos_str = rospy.get_param('~init_position', '0 0 0')  # Initial position of the camera
+        self.init_position = [float(x) for x in init_pos_str.split()]
+        self.ip = rospy.get_param('~ip', "127.0.0.1")  # IP of the unrealcv server
 
         # Select client mode
-        mode_types = {'standard': 'standard', 'fast': 'fast', 'test': 'test', 'generate': 'generate'}
+        mode_types = {'standard': 'standard', 'fast': 'fast'}
         selected = mode_types.get(self.mode, 'NotFound')
         if selected == 'NotFound':
             warning = "Unknown client mode '" + self.mode + "'. Implemented modes are: " + \
@@ -43,11 +54,15 @@ class UnrealRosClient:
             rospy.logfatal(warning[:-2])
 
         # Setup unrealcv client
-        client.connect()
-        if not client.isconnected():
+        self.m_client = unrealcv_client(9000, self.ip, (self.width, self.height))
+        self.m_client.config_ue((1080, 720))
+        self.m_client.client.request('vset /camera/[{}]/size [{}] [{}]'.format(self.camera_id, self.width, self.height))
+        # the format of pose is [x, y, z, roll, yaw, pitch] 
+        self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
+        if not self.m_client.client.isconnected():
             rospy.logfatal("No unreal game running to connect to. Please start a game before launching the node.")
 
-        status = client.request('vget /unrealcv/status')
+        status = self.m_client.client.request('vget /unrealcv/status')
         if status is None:
             rospy.logfatal("Error addressing the unrealcv client. Try restarting the game.")
 
@@ -62,28 +77,18 @@ class UnrealRosClient:
         height = int(status[loc_height + 8:loc_fov])
         fov = float(status[loc_fov + 5:loc_end])
         f = width / 2 / np.tan(fov * math.pi / 180 / 2)
+
         rospy.set_param('~camera_params', {'width': float(width), 'height': float(height), 'focal_length': float(f)})
 
-        # Initialize relative coordinate system (so camera starts at [0, 0, 0] position and [0, 0, yaw]).
-        location = client.request('vget /camera/%i/location' % self.camera_id)
-        self.coord_origin = np.array([float(x) for x in str(location).split(' ')])
-        rot = client.request('vget /camera/%i/rotation' % self.camera_id)
-        self.coord_yaw = float(str(rot).split(' ')[1])
-        client.request("vset /camera/{0:d}/rotation 0 {1:f} 0".format(self.camera_id, self.coord_yaw))
-
-        # tf broadcaster
-        if self.mode == 'test' or self.publish_tf:
-            self.tf_br = tf.TransformBroadcaster()  # Publish camera transforms in tf
+        # Initialize relative coordinate system (so camera starts at [0, 0, 0] position and [0, 0, yaw]).        
+        location = self.m_client.get_cam_location(self.camera_id)
+        self.coord_origin = np.array([location[0], location[1], location[2]])
+        rot = self.m_client.get_cam_rotation(self.camera_id)
+        self.coord_yaw = rot[1]
+        self.m_client.set_cam_rotation(self.camera_id, (0, self.coord_yaw, 0))
 
         # Setup mode
-        if self.mode == 'test':
-            rospy.Timer(rospy.Duration(0.01), self.test_callback)  # 100 Hz try capture frequency
-
-        elif self.mode == 'generate':
-            rospy.Timer(rospy.Duration(0.05), self.generate_traj_callback) # 20 Hz capture
-            self.posepub = rospy.Publisher("~ue_sensor_pose", PoseStamped, queue_size=10)
-
-        elif self.mode == 'standard':
+        if self.mode == 'standard':
             self.sub = rospy.Subscriber("odometry", Odometry, self.odom_callback, queue_size=self.queue_size,
                                         buff_size=(2 ** 24) * self.queue_size)
             # The buffersize needs to be large enough to fit all messages, otherwise strange things happen
@@ -94,17 +99,21 @@ class UnrealRosClient:
             self.sub = rospy.Subscriber("odometry", Odometry, self.fast_callback, queue_size=self.queue_size,
                                         buff_size=(2 ** 24) * self.queue_size)
             self.previous_odom_msg = None  # Previously processed Odom message
-
+        
+        else:
+            rospy.logfatal("Unknown mode selected. Implemented modes are: " + "".join(["'" + m + "', " for m in mode_types]))
+            
+        self.bridge = CvBridge()
+        
         # Finish setup
         self.pub = rospy.Publisher("~ue_sensor_raw", UeSensorRaw, queue_size=10)
         rospy.Service('~terminate_with_reset', SetBool, self.terminate_with_reset_srv)
         if self.collision_on:
             self.collision_pub = rospy.Publisher("~collision", String, queue_size=10)
-        rospy.loginfo("unreal_ros_client is ready in %s mode." % self.mode)
-
+        rospy.loginfo("unreal_ros_client is ready in %s mode.\n*********" % self.mode)
+        
+    
     def fast_callback(self, ros_data):
-        ''' Use the custom unrealcv command to get images and collision checks. vget UECVROS command returns the images
-        and then sets the new pose, therefore the delay. '''
         if self.should_terminate:
             return
         # Slowdown to give more rendering time to the unreal engine
@@ -114,28 +123,23 @@ class UnrealRosClient:
         position, orientation = self.transform_to_unreal(ros_data.pose.pose)
 
         # Call the plugin (takes images and then sets the new position)
-        args = np.concatenate((position, orientation, np.array([float(self.collision_on)])), axis=0)
-        result = client.request("vget /uecvros/full" + "".join([" {0:f}".format(x) for x in args]) + " " +
-                                str(self.camera_id))
-
+        concat_img = self.m_client.get_image_multimodal(self.camera_id, modes=['png', 'npy']) 
+        rgb_channels = 3
+        depth_channels = 1
+        rgb = concat_img[:, :, :rgb_channels]
+        depth = concat_img[:, :, rgb_channels:rgb_channels + depth_channels]
+        
+        self.m_client.set_cam_pose(self.camera_id, list(position) + list(orientation))
+        
         if self.previous_odom_msg is not None:
             # This is not the initialization step
-            if isinstance(result, unicode):
-                # Check for collision or errors
-                if result == "Collision detected!":
-                    self.on_collision()
-                else:
-                    rospy.logerr("Unrealcv error: " + result)
-            elif isinstance(result, str):
-                # Successful: Publish data for previous pose
-                idx = int(len(result) / 2)  # Half of the bytes are the 4channel color img, half the depth
-                msg = UeSensorRaw()
-                msg.header.stamp = self.previous_odom_msg.header.stamp
-                msg.color_data = result[:idx]
-                msg.depth_data = result[idx:]
-                self.pub.publish(msg)
-            else:
-                rospy.logerr("Unknown return format from unrealcv {0}".format(type(result)))
+        
+            msg = UeSensorRaw()
+            msg.header.stamp = self.previous_odom_msg.header.stamp
+            msg.color_data = self.bridge.cv2_to_imgmsg(rgb, encoding="rgb8")
+            msg.depth_data = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
+            
+            self.pub.publish(msg)
 
         self.previous_odom_msg = ros_data
 
@@ -143,7 +147,7 @@ class UnrealRosClient:
             self.publish_tf_data(ros_data)
 
     def odom_callback(self, ros_data):
-        ''' Produce images for given odometry '''
+       # Produce images for given odometry
         if self.should_terminate:
             return
         # Slowdown to give more rendering time to the unreal engine (should not be necessary in normal mode)
@@ -164,64 +168,24 @@ class UnrealRosClient:
 
         # Set camera in unrealcv
         if self.collision_on:
-            client.request('vset /camera/{0:d}/moveto {1:f} {2:f} {3:f}'.format(self.camera_id, *position))
+            self.m_client.client.request('vset /camera/{0:d}/moveto {1:f} {2:f} {3:f}'.format(self.camera_id, *position))
 
             # Check collision
-            position_eff = client.request('vget /camera/%d/location' % self.camera_id)
+            position_eff = self.m_client.client.request('vget /camera/%d/location' % self.camera_id)
             position_eff = np.array([float(x) for x in str(position_eff).split(' ')])
             if np.linalg.norm(position - position_eff) >= self.collision_tolerance:
                 self.on_collision()
         else:
-            client.request("vset /camera/{0:d}/location {1:f} {2:f} {3:f}".format(self.camera_id, *position))
+            self.m_client.client.request("vset /camera/{0:d}/location {1:f} {2:f} {3:f}".format(self.camera_id, *position))
 
-        client.request("vset /camera/{0:d}/rotation {1:f} {2:f} {3:f}".format(self.camera_id, *orientation))
-
-    def generate_traj_callback(self, _):
-        ''' Produce poses from unreal in-game controlled camera movement to be recorded and used as human defined planning'''
-        # Get current UE pose
-        pose = client.request('vget /camera/%d/pose' % self.camera_id)
-        pose = np.array([float(x) for x in str(pose).split(' ')])
-        position = pose[:3]
-        orientation = pose[3:]
-
-        timestamp = rospy.Time.now()
-        position, orientation = self.transform_from_unreal(position, orientation)
-        pose = PoseStamped()
-        pose.header.stamp = timestamp
-        pose.header.frame_id = "cam"
-        pose.pose.position.x = position[0]
-        pose.pose.position.y = position[1]
-        pose.pose.position.z = position[2]
-
-        pose.pose.orientation.x = orientation[0]
-        pose.pose.orientation.y = orientation[1]
-        pose.pose.orientation.z = orientation[2]
-        pose.pose.orientation.w = orientation[3]
-        
-        self.posepub.publish(pose)
-        
-
-    def test_callback(self, _):
-        ''' Produce images and broadcast odometry from unreal in-game controlled camera movement '''
-        # Get current UE pose
-        pose = client.request('vget /camera/%d/pose' % self.camera_id)
-        pose = np.array([float(x) for x in str(pose).split(' ')])
-        position = pose[:3]
-        orientation = pose[3:]
-
-        timestamp = rospy.Time.now()
-        self.publish_images(timestamp)
-
-        position, orientation = self.transform_from_unreal(position, orientation)
-        self.tf_br.sendTransform((position[0], position[1], position[2]),
-                                 (orientation[0], orientation[1], orientation[2], orientation[3]),
-                                 timestamp, "camera_link", "world")
-
+        self.m_client.client.request("vset /camera/{0:d}/rotation {1:f} {2:f} {3:f}".format(self.camera_id, *orientation))
+    
     def publish_images(self, header_stamp):
         ''' Produce and publish images for test and standard mode'''
-        # Retrieve images
-        res_color = client.request('vget /camera/%d/lit npy' % self.camera_id)
-        res_depth = client.request('vget /camera/%d/depth npy' % self.camera_id)
+        rospy.loginfo('!!!: enter publish_images fucntion but here is nothing.')
+        
+        res_color = self.m_client.get_image(self.camera_id, 'lit', 'npy')
+        res_depth = self.m_client.get_depth(self.camera_id, 'npy')
 
         # Publish data
         msg = UeSensorRaw()
@@ -233,8 +197,7 @@ class UnrealRosClient:
     def publish_tf_data(self, odom_msg):
         pos = odom_msg.pose.pose.position
         rot = odom_msg.pose.pose.orientation
-        self.tf_br.sendTransform((pos.x, pos.y, pos.z), (rot.x, rot.y, rot.z, rot.w), odom_msg.header.stamp,
-                                 "camera_link", "world")
+        self.tf_br.sendTransform((pos.x, pos.y, pos.z), (rot.x, rot.y, rot.z, rot.w), odom_msg.header.stamp, "camera_link", "world")
 
     def transform_to_unreal(self, pose):
         '''
@@ -285,7 +248,7 @@ class UnrealRosClient:
     @staticmethod
     def reset_client():
         # Free up unrealcv connection cleanly when shutting down
-        client.disconnect()
+        # client.disconnect()
         rospy.loginfo('On unreal_ros_client shutdown: disconnected unrealcv client.')
 
     def terminate_with_reset_srv(self, _):
@@ -295,10 +258,10 @@ class UnrealRosClient:
         goal = np.concatenate((self.coord_origin, np.array([0, self.coord_yaw, 0])), axis=0)
         time.sleep(2.0)     # Make sure regular execution is finished -> unrealcv client is ready
         if self.mode == 'fast':
-            client.request("vget /uecvros/full" + "".join([" {0:f}".format(x) for x in goal]) + " -1.0 " +
-                           str(self.camera_id))
+            # self.m_client.client.request("vget /uecvros/full" + "".join([" {0:f}".format(x) for x in goal]) + " -1.0 " + str(self.camera_id))
+            None
         else:
-            client.request("vset /camera/{0:d}/pose {1:f} {2:f} {3:f} {4:f} {5:f} {6:f}".format(self.camera_id, *goal))
+            self.m_client.client.request("vset /camera/{0:d}/pose {1:f} {2:f} {3:f} {4:f} {5:f} {6:f}".format(self.camera_id, *goal))
         return [True, ""]
 
     def on_collision(self):

@@ -17,6 +17,8 @@ import numpy as np
 from struct import pack, unpack
 import time
 
+from PIL import Image as PImage
+import base64
 
 class SensorModel:
 
@@ -55,8 +57,8 @@ class SensorModel:
             rospy.loginfo("Waiting for unreal camera params at '%s' ...", camera_params_ns)
             while not rospy.has_param(camera_params_ns+'/width'):
                 rospy.sleep(0.1)
-        self.camera_params = [rospy.get_param(camera_params_ns+'/width'), rospy.get_param(camera_params_ns+'/height'),
-                              rospy.get_param(camera_params_ns+'/focal_length')]
+        self.camera_params = [int(rospy.get_param(camera_params_ns+'/width')), int(rospy.get_param(camera_params_ns+'/height')),
+                              int(rospy.get_param(camera_params_ns+'/focal_length'))]
 
         # Initialize node
         self.pub = rospy.Publisher("~ue_sensor_out", PointCloud2, queue_size=10)
@@ -67,21 +69,25 @@ class SensorModel:
             self.color_img_pub = rospy.Publisher("~ue_color_image_out", Image, queue_size=10)
         if self.publish_gray_images:
             self.gray_img_pub = rospy.Publisher("~ue_gray_image_out", Image, queue_size=10)
+            
+        self.cv_bridge = cv_bridge.CvBridge()
 
-        rospy.loginfo("Sensor model setup cleanly.")
+        rospy.loginfo("Sensor model setup cleanly.\n*********")
 
     def callback(self, ros_data):
         ''' Produce simulated sensor outputs from raw binary data '''
         # Read out images
-        img_color = np.load(io.BytesIO(bytearray(ros_data.color_data)))
-        img_depth = np.load(io.BytesIO(bytearray(ros_data.depth_data)))
+        img_color = self.cv_bridge.imgmsg_to_cv2(ros_data.color_data, "rgb8")
+        img_depth = self.cv_bridge.imgmsg_to_cv2(ros_data.depth_data, "32FC1")
+        
         mask_depth = img_depth.reshape(-1)
-
+        
         # Build 3D point cloud from depth
         if self.flatten_distance > 0:
             img_depth = np.clip(img_depth, 0, self.flatten_distance)
+        
         (x, y, z) = self.depth_to_3d(img_depth)
-
+     
         # Pack RGB image (for ros representation)
         rgb = self.rgb_to_float(img_color)
 
@@ -115,7 +121,7 @@ class SensorModel:
         msg.point_step = 16
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
-        msg.data = np.float32(data).tostring()
+        msg.data = np.float32(data).tobytes()
         self.pub.publish(msg)
 
         # If requested, also publish the image
@@ -137,12 +143,13 @@ class SensorModel:
         width = self.camera_params[0]
         center_x = width/2
         center_y = height/2
+        
         f = self.camera_params[2]
         cols, rows = np.meshgrid(np.linspace(0, width - 1, num=width), np.linspace(0, height - 1, num=height))
 
         # Process depth image from ray length to camera axis depth
         distance = ((rows - center_y) ** 2 + (cols - center_x) ** 2) ** 0.5
-        points_z = img_depth / (1 + (distance / f) ** 2) ** 0.5
+        points_z = img_depth  # / (1 + (distance / f) ** 2) ** 0.5
 
         # Create x and y position
         points_x = points_z * (cols - center_x) / f

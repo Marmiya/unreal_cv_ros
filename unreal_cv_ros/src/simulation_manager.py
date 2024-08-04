@@ -51,7 +51,7 @@ class SimulationManager:
             self.mon_sensor_time = deque(maxlen=self.horizon)
 
             # Subscribers
-            self.ue_raw_sub = rospy.Subscriber("ue_raw_in", UeSensorRaw, self.mon_raw_callback, queue_size=10)
+            # self.ue_raw_sub = rospy.Subscriber("ue_raw_in", UeSensorRaw, self.mon_raw_callback, queue_size=10)
             self.ue_out_sub = rospy.Subscriber("ue_out_in", PointCloud2, self.mon_out_callback, queue_size=10)
 
             # Printing service
