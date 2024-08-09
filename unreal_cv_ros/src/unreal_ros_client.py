@@ -22,7 +22,7 @@ import time
 
 import base64
 from unrealcv_api import UnrealCv_API as unrealcv_client
-# import airsim
+import cv2
 
 
 class UnrealRosClient:
@@ -41,7 +41,7 @@ class UnrealRosClient:
         self.queue_size = rospy.get_param('~queue_size', 1)  # How many requests are kept
         self.height = rospy.get_param('~height', 768)  # Height of the image
         self.width = rospy.get_param('~width', 1024)  # Width of the image
-        init_pos_str = rospy.get_param('~init_position', '0 0 0')  # Initial position of the camera
+        init_pos_str = rospy.get_param('~init_position', '-1 -2 -3')  # Initial position of the camera
         self.init_position = [float(x) for x in init_pos_str.split()]
         self.ip = rospy.get_param('~ip', "127.0.0.1")  # IP of the unrealcv server
 
@@ -54,13 +54,17 @@ class UnrealRosClient:
             rospy.logfatal(warning[:-2])
 
         # Setup unrealcv client
-        self.m_client = unrealcv_client(9000, self.ip, (self.width, self.height))
-        self.m_client.config_ue((1080, 720))
-        self.m_client.client.request('vset /camera/[{}]/size [{}] [{}]'.format(self.camera_id, self.width, self.height))
-        # the format of pose is [x, y, z, roll, yaw, pitch] 
-        self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
+        self.m_client = unrealcv_client(9000, self.ip, (self.width, self.height), mode="unix")
+        
+        # self.m_client.config_ue((1080, 720))
+        
         if not self.m_client.client.isconnected():
             rospy.logfatal("No unreal game running to connect to. Please start a game before launching the node.")
+            
+        # the format of pose is [x, y, z, roll, yaw, pitch] 
+        if self.init_position != [-1, -2, -3]:
+            self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
+            self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
 
         status = self.m_client.client.request('vget /unrealcv/status')
         if status is None:
@@ -80,8 +84,10 @@ class UnrealRosClient:
 
         rospy.set_param('~camera_params', {'width': float(width), 'height': float(height), 'focal_length': float(f)})
 
-        # Initialize relative coordinate system (so camera starts at [0, 0, 0] position and [0, 0, yaw]).        
-        location = self.m_client.get_cam_location(self.camera_id)
+        # Initialize relative coordinate system (so camera starts at [0, 0, 0] position and [0, yaw, 0]).        
+        location = self.m_client.get_cam_location(0)
+        print("id:", self.camera_id)
+        print('location:', location)
         self.coord_origin = np.array([location[0], location[1], location[2]])
         rot = self.m_client.get_cam_rotation(self.camera_id)
         self.coord_yaw = rot[1]
@@ -127,8 +133,11 @@ class UnrealRosClient:
         rgb_channels = 3
         depth_channels = 1
         rgb = concat_img[:, :, :rgb_channels]
+        
+        rgb = (rgb).astype(np.uint8)
         depth = concat_img[:, :, rgb_channels:rgb_channels + depth_channels]
         
+        self.m_client.set_cam_pose(0, list(position) + list(orientation))
         self.m_client.set_cam_pose(self.camera_id, list(position) + list(orientation))
         
         if self.previous_odom_msg is not None:
@@ -136,8 +145,8 @@ class UnrealRosClient:
         
             msg = UeSensorRaw()
             msg.header.stamp = self.previous_odom_msg.header.stamp
-            msg.color_data = self.bridge.cv2_to_imgmsg(rgb, encoding="rgb8")
-            msg.depth_data = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
+            msg.rgb_image = self.bridge.cv2_to_imgmsg(rgb, encoding="8UC3")
+            msg.depth_image = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
             
             self.pub.publish(msg)
 
@@ -190,8 +199,8 @@ class UnrealRosClient:
         # Publish data
         msg = UeSensorRaw()
         msg.header.stamp = header_stamp
-        msg.color_data = res_color
-        msg.depth_data = res_depth
+        msg.rgb_image = res_color
+        msg.depth_image = res_depth
         self.pub.publish(msg)
 
     def publish_tf_data(self, odom_msg):

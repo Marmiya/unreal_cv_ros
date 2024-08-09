@@ -15,11 +15,7 @@ import warnings
 
 class UnrealCv_API(object):
     def __init__(self, port, ip, resolution, mode='tcp'):
-        # if ip == '127.0.0.1':
-        #     self.docker = False
-        # else:
-        #     self.docker = True
-        # self.envdir = env
+
         self.ip = ip
         self.resolution = resolution
         self.decoder = MsgDecoder(resolution)
@@ -32,16 +28,18 @@ class UnrealCv_API(object):
         self.init_map()
 
     def connect(self, ip, port, mode='tcp'):
-        client = unrealcv.Client((ip, port))
-        client.connect()
-        if mode == 'unix':
+        if mode == 'tcp':
+            client = unrealcv.Client((ip, port))
+            client.connect()
+        elif mode == 'unix':
             if 'linux' in sys.platform and unrealcv.__version__ >= '1.0.0':  # new socket for linux
-                unix_socket_path = os.path.join('/tmp/unrealcv_{port}.socket'.format(port=port))  # clean the old socket
-                os.remove(unix_socket_path) if os.path.exists(unix_socket_path) else None
-                client.disconnect() # disconnect the client for creating a new socket in linux
-                time.sleep(2)
+                sock_name = '/tmp/unrealcv_{port}.socket'.format(port=port)
+                unix_socket_path = os.path.join(sock_name)  # clean the old socket
+                # os.remove(unix_socket_path) if os.path.exists(unix_socket_path) else None
+                # client.disconnect() # disconnect the client for creating a new socket in linux
+                time.sleep(2) 
                 if unix_socket_path is not None and os.path.exists(unix_socket_path):
-                    client = unrealcv.Client(unix_socket_path, 'tcp')
+                    client = unrealcv.Client(unix_socket_path, 'unix')
                 else:
                     client = unrealcv.Client((ip, port)) # reconnect to the tcp socket
                 client.connect()

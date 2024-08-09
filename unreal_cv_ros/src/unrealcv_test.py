@@ -1,8 +1,19 @@
 import unrealcv_api
+import unrealcv
+import cv2
 
-client = unrealcv_api.UnrealCv_API(9000, '127.0.0.1', (1024, 768))
+client = unrealcv_api.UnrealCv_API(9000, '127.0.0.1', (1024, 768), mode="unix")
 
 
-status = client.client.request('vget /unrealcv/status')
+print(client.client.request('vget /cameras'))
 
-print(status)
+print(client.get_cam_location(0))
+
+client.set_cam_location(0,(0,0,1500))
+
+image = client.get_image(1, 'lit', 'png')
+
+print(client.get_cam_location(0))
+
+# save the image to disk
+cv2.imwrite('/home/marinaio/catkin_ws/mlogs/test.png', image)

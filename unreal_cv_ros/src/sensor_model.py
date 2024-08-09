@@ -77,8 +77,8 @@ class SensorModel:
     def callback(self, ros_data):
         ''' Produce simulated sensor outputs from raw binary data '''
         # Read out images
-        img_color = self.cv_bridge.imgmsg_to_cv2(ros_data.color_data, "rgb8")
-        img_depth = self.cv_bridge.imgmsg_to_cv2(ros_data.depth_data, "32FC1")
+        img_color = self.cv_bridge.imgmsg_to_cv2(ros_data.rgb_image, "8UC3")
+        img_depth = self.cv_bridge.imgmsg_to_cv2(ros_data.depth_image, "32FC1") / 100.0 # Convert to meters
         
         mask_depth = img_depth.reshape(-1)
         
@@ -126,7 +126,7 @@ class SensorModel:
 
         # If requested, also publish the image
         if self.publish_color_images:
-            img_msg = self.cv_bridge.cv2_to_imgmsg(img_color, "rgba8")
+            img_msg = self.cv_bridge.cv2_to_imgmsg(img_color, "8UC3")
             img_msg.header.stamp = ros_data.header.stamp
             img_msg.header.frame_id = 'camera'
             self.color_img_pub.publish(img_msg)
