@@ -63,7 +63,7 @@ class UnrealRosClient:
             
         # the format of pose is [x, y, z, roll, yaw, pitch] 
         if self.init_position != [-1, -2, -3]:
-            self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
+            self.m_client.set_cam_pose(0, self.init_position + [0, 0, 0])
             self.m_client.set_cam_pose(self.camera_id, self.init_position + [0, 0, 0])
 
         status = self.m_client.client.request('vget /unrealcv/status')

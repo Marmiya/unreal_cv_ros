@@ -160,9 +160,9 @@ class SensorModel:
     @staticmethod
     def rgb_to_float(img_color):
         ''' Stack uint8 rgb image into a single float array (efficiently) for ros compatibility '''
-        r = np.ravel(img_color[:, :, 0]).astype(int)
+        r = np.ravel(img_color[:, :, 2]).astype(int)
         g = np.ravel(img_color[:, :, 1]).astype(int)
-        b = np.ravel(img_color[:, :, 2]).astype(int)
+        b = np.ravel(img_color[:, :, 0]).astype(int)
         color = np.left_shift(r, 16) + np.left_shift(g, 8) + b
         packed = pack('%di' % len(color), *color)
         unpacked = unpack('%df' % len(color), packed)
